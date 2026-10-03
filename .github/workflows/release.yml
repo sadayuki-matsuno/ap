@@ -1,0 +1,87 @@
+name: Release
+
+# Tag `vX.Y.Z` -> test, stamp the version, build an arm64 binary, publish a GitHub Release
+# with the tarball + checksum, then bump the Homebrew formula in sadayuki-matsuno/homebrew-tap.
+# A tag with a hyphen (e.g. v1.0.0-rc1) becomes a pre-release and never touches the tap.
+# Re-running the workflow for an existing release re-uploads the assets and continues to the tap step.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      # Fine-grained PAT with contents:write on sadayuki-matsuno/homebrew-tap.
+      # Absent -> the tap step is skipped and the formula must be bumped by hand.
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: make test
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          case "$VERSION" in
+            *-*) echo "PRERELEASE=true" >> "$GITHUB_ENV" ;;
+            *) echo "PRERELEASE=false" >> "$GITHUB_ENV" ;;
+          esac
+          sed -i '' -E "s/^let apVersion = \".*\"/let apVersion = \"${VERSION}\"/" Sources/ap/Version.swift
+          grep -q "^let apVersion = \"${VERSION}\"$" Sources/ap/Version.swift
+
+      - name: Build
+        run: swift build -c release --arch arm64
+
+      - name: Package
+        run: |
+          BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
+          "${BIN_DIR}/ap" --version
+          tar -czf "ap-${VERSION}-arm64.tar.gz" -C "${BIN_DIR}" ap
+          shasum -a 256 "ap-${VERSION}-arm64.tar.gz" | tee "ap-${VERSION}-arm64.tar.gz.sha256"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ASSETS=("ap-${VERSION}-arm64.tar.gz" "ap-${VERSION}-arm64.tar.gz.sha256")
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            # Re-run: the release exists already, so replace its assets instead of failing on create
+            gh release upload "$GITHUB_REF_NAME" --clobber "${ASSETS[@]}"
+          else
+            PRERELEASE_FLAG=()
+            if [ "$PRERELEASE" = "true" ]; then PRERELEASE_FLAG=(--prerelease); fi
+            gh release create "$GITHUB_REF_NAME" \
+              --title "ap $GITHUB_REF_NAME" \
+              --generate-notes \
+              "${PRERELEASE_FLAG[@]}" \
+              "${ASSETS[@]}"
+          fi
+
+      # Keep `brew install` current: rewrite the formula's url + sha256 to this release
+      # (Homebrew infers the version from the url). The tarball the checksum names is the one
+      # uploaded above, so the formula can never point at an asset that doesn't exist yet.
+      - name: Update Homebrew tap
+        if: env.TAP_TOKEN != '' && env.PRERELEASE != 'true'
+        run: |
+          SHA=$(cut -d' ' -f1 "ap-${VERSION}-arm64.tar.gz.sha256")
+          URL="https://github.com/sadayuki-matsuno/ap/releases/download/v${VERSION}/ap-${VERSION}-arm64.tar.gz"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/sadayuki-matsuno/homebrew-tap.git" tap
+          cd tap
+          sed -i '' -E "s|^  url \".*\"|  url \"${URL}\"|" Formula/ap.rb
+          sed -i '' -E "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" Formula/ap.rb
+          # sed exits 0 even when nothing matched, so verify both lines really changed
+          grep -qF "  url \"${URL}\"" Formula/ap.rb || { echo "::error::url line not updated in Formula/ap.rb"; exit 1; }
+          grep -qF "  sha256 \"${SHA}\"" Formula/ap.rb || { echo "::error::sha256 line not updated in Formula/ap.rb"; exit 1; }
+          if git diff --quiet -- Formula/ap.rb; then echo "formula already at ${VERSION}"; exit 0; fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -am "ap ${VERSION}"
+          git push
