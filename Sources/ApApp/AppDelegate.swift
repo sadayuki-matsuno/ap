@@ -34,6 +34,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     static let firstLaunchBannerKey = "accessibilityBannerShown"
     /// Decides when holding Control reveals a concealed clip (reset on every open)
     var revealGate = RevealGate(controlDown: false)
+    static let hotKeyDefaultsKey = "hotKey"
+    /// The global hotkey (Settings can change it; stored as keyCode + Carbon modifiers)
+    var shortcut = Shortcut(userDefaultsValue: UserDefaults.standard.object(forKey: hotKeyDefaultsKey)) ?? .default
+    let settings = SettingsModel()
+    var settingsWindow: NSWindow?
+    /// false when RegisterEventHotKey refused both the saved hotkey and the default: no global hotkey works
+    var hotKeyRegistered = false
+    /// The hotkey that failed to register at the last attempt (the default may be active in its place)
+    var failedShortcut: Shortcut?
+    /// The app that was frontmost when Settings opened; it gets the focus back when Settings closes
+    var appBeforeSettings: NSRunningApplication?
+    /// The last app other than Ap that became active: the paste target when Ap itself is frontmost at open time
+    var lastOtherApp: NSRunningApplication?
 
     init(store: ClipStore) {
         self.store = store
@@ -42,7 +55,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "Ap")
+        // The Ap mark (mark.png / mark@2x.png in Contents/Resources) as a template image, so it follows the menu bar's
+        // light / dark appearance. Falls back to an SF Symbol when run outside the bundle (swift run)
+        if let mark = Bundle.main.image(forResource: "mark") {
+            mark.isTemplate = true
+            mark.size = NSSize(width: 18, height: 18)
+            mark.accessibilityDescription = "Ap"
+            item.button?.image = mark
+        } else {
+            item.button?.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "Ap")
+        }
         let menu = NSMenu()
         menu.delegate = self
         item.menu = menu
@@ -50,10 +72,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         registerHotKey()
 
+        lastOtherApp = NSWorkspace.shared.frontmostApplication.flatMap(Self.isOtherApp)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            MainActor.assumeIsolated {
+                if let other = app.flatMap(Self.isOtherApp) { self?.lastOtherApp = other }
+            }
+        }
+
         // Local monitors run on the main thread (older SDKs don't annotate the closure as main-actor)
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
             let handled = MainActor.assumeIsolated {
-                guard let self, event.window === self.panel else { return false }
+                guard let self else { return false }
+                // The shortcut recorder takes the next key press, whichever window has focus
+                if self.settings.isRecording, event.type == .keyDown {
+                    self.record(event)
+                    return true
+                }
+                guard event.window === self.panel else { return false }
                 return self.handle(event)
             }
             return handled ? nil : event
@@ -88,6 +126,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 MainActor.assumeIsolated { self?.showPicker() }
             }
+        } else if environment["AP_OPEN_SETTINGS_ON_LAUNCH"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                MainActor.assumeIsolated { self?.openSettings() }
+            }
         } else if environment["AP_OPEN_MENU_ON_LAUNCH"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 MainActor.assumeIsolated { self?.statusItem?.button?.performClick(nil) }
@@ -95,9 +137,134 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
+    /// Registers the current hotkey. When macOS refuses it (another app owns it), falls back to the default if that
+    /// is free (in memory only, so the saved choice is tried again at the next launch). The outcome is shown in the
+    /// menu and in Settings
     func registerHotKey() {
-        hotKey = HotKey(keyCode: kVK_ANSI_P, modifiers: cmdKey | controlKey) { [weak self] in self?.togglePicker() }
-        if hotKey == nil { NSLog("ap: could not register the Control-Command-P hotkey (in use by another app?)") }
+        let hotKey = hotKey ?? HotKey { [weak self] in self?.togglePicker() }
+        self.hotKey = hotKey
+        failedShortcut = nil
+        hotKeyRegistered = hotKey.register(shortcut)
+        if !hotKeyRegistered {
+            NSLog("ap: could not register the hotkey \(shortcutSymbols(shortcut)) (in use by another app?)")
+            failedShortcut = shortcut
+            if shortcut != .default, hotKey.register(.default) {
+                shortcut = .default
+                hotKeyRegistered = true
+            }
+        }
+        refreshHotKeyStatus()
+    }
+
+    func refreshHotKeyStatus() {
+        settings.shortcutText = shortcutSymbols(shortcut)
+        settings.resetText = shortcutSymbols(.default)
+        if !hotKeyRegistered {
+            settings.warning = String(localized:
+                "\(shortcutSymbols(shortcut)) couldn\u{2019}t be registered \u{2014} another app may be using it. Record a different shortcut.")
+        } else if let failedShortcut {
+            settings.warning = String(localized:
+                "\(shortcutSymbols(failedShortcut)) couldn\u{2019}t be registered \u{2014} another app may be using it. Using \(shortcutSymbols(shortcut)) instead.")
+        } else {
+            settings.warning = nil
+        }
+    }
+
+    /// nil for Ap itself
+    nonisolated static func isOtherApp(_ app: NSRunningApplication) -> NSRunningApplication? {
+        app.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : app
+    }
+
+    func shortcutSymbols(_ shortcut: Shortcut) -> String {
+        shortcut.symbols(keyLabel: KeyboardLayout.character(for: shortcut.keyCode))
+    }
+
+    // MARK: - Settings
+
+    @objc func openSettings() {
+        // The picker is non-activating, so the app the user was in is still frontmost here
+        if settingsWindow?.isVisible != true {
+            appBeforeSettings = NSWorkspace.shared.frontmostApplication.flatMap(Self.isOtherApp) ?? lastOtherApp
+        }
+        hidePicker()
+        refreshSettings()
+        let window = settingsWindow ?? {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 480, height: 300), styleMask: [.titled, .closable],
+                backing: .buffered, defer: false)
+            window.title = String(localized: "Ap Settings")
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            let hosting = NSHostingView(rootView: SettingsView(
+                settings: settings, model: model,
+                actions: SettingsActions(
+                    beginRecording: { [weak self] in self?.beginRecording() },
+                    cancelRecording: { [weak self] in self?.endRecording() },
+                    resetShortcut: { [weak self] in self?.applyShortcut(.default) },
+                    setLaunchAtLogin: { [weak self] in self?.setLaunchAtLogin($0) },
+                    setLanguage: { [weak self] in self?.setLanguage($0) },
+                    allowAccessibility: { [weak self] in self?.requestAccessibility() })))
+            window.contentView = hosting
+            window.setContentSize(hosting.fittingSize)
+            window.center()
+            return window
+        }()
+        settingsWindow = window
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func refreshSettings() {
+        refreshHotKeyStatus()
+        settings.launchAtLogin = SMAppService.mainApp.status == .enabled
+        settings.language = (UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?[
+            "AppleLanguages"] as? [String])?.first
+        model.accessibilityTrusted = AXIsProcessTrusted()
+    }
+
+    /// The global hotkey is released while recording, so the current combination can be recorded again
+    func beginRecording() {
+        settings.message = nil
+        settings.isRecording = true
+        hotKey?.unregister()
+    }
+
+    func endRecording() {
+        settings.isRecording = false
+        registerHotKey()
+    }
+
+    func record(_ event: NSEvent) {
+        let flags = event.modifierFlags
+        var modifiers = 0
+        if flags.contains(.command) { modifiers |= Shortcut.command }
+        if flags.contains(.shift) { modifiers |= Shortcut.shift }
+        if flags.contains(.option) { modifiers |= Shortcut.option }
+        if flags.contains(.control) { modifiers |= Shortcut.control }
+        switch Shortcut.interpret(keyCode: Int(event.keyCode), modifiers: modifiers) {
+        case .cancel: endRecording()
+        case .reset: applyShortcut(.default)
+        case .rejected(.noModifier): settings.message = String(localized: "Use at least one of \u{2318}, \u{2303} or \u{2325}")
+        case .rejected(.commandOnly):
+            settings.message = String(localized: "Add \u{2303} or \u{2325} \u{2014} \u{2318}-only shortcuts clash with app shortcuts")
+        case .record(let shortcut): applyShortcut(shortcut)
+        }
+    }
+
+    /// Registers the new hotkey and saves it; when macOS refuses it, the old one stays
+    func applyShortcut(_ newShortcut: Shortcut) {
+        settings.isRecording = false
+        if hotKey?.register(newShortcut) == true {
+            shortcut = newShortcut
+            hotKeyRegistered = true
+            failedShortcut = nil
+            UserDefaults.standard.set(newShortcut.userDefaultsValue, forKey: Self.hotKeyDefaultsKey)
+            settings.message = nil
+            refreshHotKeyStatus()
+        } else {
+            registerHotKey()
+            settings.message = String(localized: "This shortcut is used by another app or macOS")
+        }
     }
 
     // MARK: - Background work
@@ -159,8 +326,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     func showPicker() {
-        let frontmost = NSWorkspace.shared.frontmostApplication
-        previousApp = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmost
+        // When Ap itself is frontmost (Settings or an alert just had the focus), paste into the last other app instead
+        // of sending Command-V to Ap
+        previousApp = NSWorkspace.shared.frontmostApplication.flatMap(Self.isOtherApp) ?? lastOtherApp
         let panel = panel ?? makePanel()
         self.panel = panel
         // Settings was opened but the grant never showed up: the switch may need a relaunch to apply, or an entry from
@@ -224,9 +392,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         return panel
     }
 
-    /// Clicking elsewhere closes the picker, like Spotlight
+    /// Closing Settings hands the focus back to the app that had it, so the accessory app doesn't stay active
+    func windowWillClose(_ notification: Notification) {
+        guard notification.object as? NSWindow === settingsWindow else { return }
+        if settings.isRecording { endRecording() }
+        if NSApp.isActive { (appBeforeSettings ?? lastOtherApp)?.activate() }
+        appBeforeSettings = nil
+    }
+
+    /// Clicking elsewhere closes the picker, like Spotlight. Leaving Settings stops a recording in progress
     func windowDidResignKey(_ notification: Notification) {
-        hidePicker()
+        if notification.object as? NSWindow === panel {
+            hidePicker()
+        } else if settings.isRecording {
+            endRecording()
+        }
     }
 
     /// true when the event was handled (and must not reach the search field)
@@ -266,6 +446,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         // With text in the search field, Command-Delete keeps its text meaning (delete to the line start)
         case kVK_Delete where command && model.queryText.isEmpty: model.deleteSelected()
         case kVK_ANSI_O where command: model.copyResumeCommand()
+        case kVK_ANSI_Comma where command: openSettings()
         // There is no main menu (no Edit menu key equivalents), so route the text editing shortcuts by hand
         case kVK_ANSI_X where command: panel?.firstResponder?.tryToPerform(#selector(NSText.cut(_:)), with: nil)
         case kVK_ANSI_C where command: panel?.firstResponder?.tryToPerform(#selector(NSText.copy(_:)), with: nil)
@@ -291,7 +472,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         hidePicker()
         guard paste else { return }
         previousApp?.activate()
-        let keyCode = keyCodeForV()
+        let keyCode = CGKeyCode(KeyboardLayout.keyCode(for: "v") ?? kVK_ANSI_V)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             let source = CGEventSource(stateID: .combinedSessionState)
             for keyDown in [true, false] {
@@ -299,27 +480,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 event?.flags = .maskCommand
                 event?.post(tap: .cghidEventTap)
             }
-        }
-    }
-
-    /// The key code that types "v" in the current keyboard layout (Dvorak and AZERTY move it), else the ANSI position
-    func keyCodeForV() -> CGKeyCode {
-        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
-              let pointer = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
-        else { return CGKeyCode(kVK_ANSI_V) }
-        let layoutData = Unmanaged<CFData>.fromOpaque(pointer).takeUnretainedValue()
-        guard let bytes = CFDataGetBytePtr(layoutData) else { return CGKeyCode(kVK_ANSI_V) }
-        return bytes.withMemoryRebound(to: UCKeyboardLayout.self, capacity: 1) { layout in
-            for keyCode in 0..<128 {
-                var deadKeyState: UInt32 = 0
-                var characters = [UniChar](repeating: 0, count: 4)
-                var length = 0
-                let status = UCKeyTranslate(
-                    layout, UInt16(keyCode), UInt16(kUCKeyActionDown), 0, UInt32(LMGetKbdType()),
-                    OptionBits(kUCKeyTranslateNoDeadKeysBit), &deadKeyState, characters.count, &length, &characters)
-                if status == noErr, length == 1, characters[0] == UniChar(0x76) { return CGKeyCode(keyCode) }
-            }
-            return CGKeyCode(kVK_ANSI_V)
         }
     }
 
@@ -360,8 +520,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         menu.addItem(.separator())
 
-        let open = NSMenuItem(title: String(localized: "Open Picker"), action: #selector(openPickerFromMenu), keyEquivalent: "p")
-        open.keyEquivalentModifierMask = [.command, .control]
+        // Shows the current hotkey. A key without a plain character (F5, arrows, Space) gets it in the title instead
+        let keyCharacter = KeyboardLayout.character(for: shortcut.keyCode)
+        let symbols = shortcutSymbols(shortcut)
+        let plainKey = keyCharacter.map { $0.count == 1 && symbols.hasSuffix($0.uppercased()) } ?? false
+        let open: NSMenuItem
+        if hotKeyRegistered {
+            open = NSMenuItem(
+                title: plainKey ? String(localized: "Open Picker") : String(localized: "Open Picker") + "  " + symbols,
+                action: #selector(openPickerFromMenu), keyEquivalent: plainKey ? (keyCharacter ?? "") : "")
+        } else {
+            // No key equivalent: showing one would claim a hotkey that doesn't work
+            open = NSMenuItem(
+                title: String(localized: "Open Picker (shortcut unavailable)"), action: #selector(openPickerFromMenu),
+                keyEquivalent: "")
+        }
+        var modifierMask: NSEvent.ModifierFlags = []
+        if shortcut.modifiers & Shortcut.command != 0 { modifierMask.insert(.command) }
+        if shortcut.modifiers & Shortcut.shift != 0 { modifierMask.insert(.shift) }
+        if shortcut.modifiers & Shortcut.option != 0 { modifierMask.insert(.option) }
+        if shortcut.modifiers & Shortcut.control != 0 { modifierMask.insert(.control) }
+        open.keyEquivalentModifierMask = modifierMask
         open.target = self
         menu.addItem(open)
         let trusted = AXIsProcessTrusted()
@@ -403,6 +582,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         language.submenu = languageMenu
         menu.addItem(language)
         menu.addItem(.separator())
+        let settingsItem = NSMenuItem(
+            title: String(localized: "Settings\u{2026}"), action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        menu.addItem(.separator())
         let quit = NSMenuItem(title: String(localized: "Quit Ap"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
     }
@@ -442,7 +626,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     /// carries over) and quit. The hotkey is released first so the new instance can register it
     func relaunch() {
         hotKey?.unregister()
-        hotKey = nil
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
         configuration.environment = ProcessInfo.processInfo.environment
@@ -462,7 +645,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     @objc func chooseLanguage(_ sender: NSMenuItem) {
-        if let code = sender.representedObject as? String {
+        setLanguage(sender.representedObject as? String)
+    }
+
+    /// nil follows the system
+    func setLanguage(_ code: String?) {
+        settings.language = code
+        if let code {
             UserDefaults.standard.set([code], forKey: "AppleLanguages")
         } else {
             UserDefaults.standard.removeObject(forKey: "AppleLanguages")
@@ -477,11 +666,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     @objc func toggleLaunchAtLogin() {
+        setLaunchAtLogin(SMAppService.mainApp.status != .enabled)
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        defer { settings.launchAtLogin = SMAppService.mainApp.status == .enabled }
         do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            } else {
+            if enabled {
                 try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
             }
         } catch {
             let alert = NSAlert()

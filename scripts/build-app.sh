@@ -22,6 +22,9 @@ cp "$BIN/ap" "$APP/Contents/MacOS/ap"
 # UI strings (en, ja). Copied by hand rather than as SwiftPM resources: Bundle.module looks for a resource bundle next
 # to the executable's build directory, which a hand-assembled .app doesn't have. Bundle.main finds these
 cp -R packaging/Resources/*.lproj "$APP/Contents/Resources/"
+# The app icon and the menu bar mark (template image, 18 pt at @1x and @2x). Generated from assets/*.svg by
+# scripts/make-icons.sh and committed, so building needs no SVG renderer
+cp assets/AppIcon.icns assets/mark.png assets/mark@2x.png "$APP/Contents/Resources/"
 
 # macOS keys the Accessibility grant on the code signature's designated requirement. An ad-hoc signature's
 # requirement is the cdhash, so every rebuild is a new app and the grant is lost. A stable signing identity (even an

@@ -66,3 +66,23 @@
 "Could not change Launch at Login" = "Could not change Launch at Login";
 "%@\nMove Ap.app to /Applications and try again." = "%@\nMove Ap.app to /Applications and try again.";
 "Ap could not open its database" = "Ap could not open its database";
+
+/* Settings */
+"Ap Settings" = "Ap Settings";
+"Settings…" = "Settings…";
+"Settings" = "Settings";
+"Hotkey" = "Hotkey";
+"Type shortcut…" = "Type shortcut…";
+"Reset to %@" = "Reset to %@";
+"Esc cancels, Delete resets to the default" = "Esc cancels, Delete resets to the default";
+"Accessibility" = "Accessibility";
+"Allowed" = "Allowed";
+"Allow…" = "Allow…";
+"Picker" = "Picker";
+"General" = "General";
+"Use at least one of ⌘, ⌃ or ⌥" = "Use at least one of ⌘, ⌃ or ⌥";
+"This shortcut is used by another app or macOS" = "This shortcut is used by another app or macOS";
+"Add ⌃ or ⌥ — ⌘-only shortcuts clash with app shortcuts" = "Add ⌃ or ⌥ — ⌘-only shortcuts clash with app shortcuts";
+"Open Picker (shortcut unavailable)" = "Open Picker (shortcut unavailable)";
+"%@ couldn’t be registered — another app may be using it. Record a different shortcut." = "%@ couldn’t be registered — another app may be using it. Record a different shortcut.";
+"%@ couldn’t be registered — another app may be using it. Using %@ instead." = "%@ couldn’t be registered — another app may be using it. Using %@ instead.";

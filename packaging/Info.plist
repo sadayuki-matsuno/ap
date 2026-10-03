@@ -19,6 +19,8 @@
 	</array>
 	<key>CFBundleExecutable</key>
 	<string>ApApp</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleShortVersionString</key>
 	<string>__SHORT_VERSION__</string>
 	<key>CFBundleVersion</key>

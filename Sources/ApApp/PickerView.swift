@@ -367,6 +367,7 @@ struct Footer: View {
                 hint("\u{2318}P", "Pin")
                 hint("\u{2318}\u{232B}", "Delete")
                 hint("\u{2318}O", "Copy resume command")
+                hint("\u{2318},", "Settings")
                 hint("esc", "Close")
             }
             if let flash = model.flash {

@@ -1,6 +1,8 @@
+import ApCore
 import Carbon.HIToolbox
 
-/// A global hotkey through Carbon's RegisterEventHotKey (no Accessibility permission needed)
+/// A global hotkey through Carbon's RegisterEventHotKey (no Accessibility permission needed). The event handler is
+/// installed once; the key itself can be re-registered (Settings) or released (recording, relaunch)
 @MainActor
 final class HotKey {
     /// The Carbon callback is a C function pointer and cannot capture, so the handler lives here
@@ -8,11 +10,10 @@ final class HotKey {
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
 
-    /// keyCode is a virtual key code (kVK_*), modifiers are Carbon masks (cmdKey | controlKey ...)
-    init?(keyCode: Int, modifiers: Int, handler: @escaping @MainActor () -> Void) {
+    init(handler: @escaping @MainActor () -> Void) {
         Self.handler = handler
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        let installStatus = InstallEventHandler(
+        InstallEventHandler(
             GetApplicationEventTarget(),
             { _, _, _ in
                 // Carbon delivers application events on the main thread
@@ -20,17 +21,21 @@ final class HotKey {
                 return noErr
             },
             1, &eventType, nil, &eventHandlerRef)
+    }
+
+    /// Replaces the registered key. false when macOS refuses it (taken by another app or the system); nothing is
+    /// registered then
+    func register(_ shortcut: Shortcut) -> Bool {
+        unregister()
         // "apv1" identifies our hotkey
         let hotKeyId = EventHotKeyID(signature: 0x6170_7631, id: 1)
-        let registerStatus = RegisterEventHotKey(
-            UInt32(keyCode), UInt32(modifiers), hotKeyId, GetApplicationEventTarget(), 0, &hotKeyRef)
-        guard installStatus == noErr, registerStatus == noErr else { return nil }
+        return RegisterEventHotKey(
+            UInt32(shortcut.keyCode), UInt32(shortcut.modifiers), hotKeyId, GetApplicationEventTarget(), 0, &hotKeyRef
+        ) == noErr
     }
 
     func unregister() {
         if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
-        if let eventHandlerRef { RemoveEventHandler(eventHandlerRef) }
         hotKeyRef = nil
-        eventHandlerRef = nil
     }
 }

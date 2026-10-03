@@ -14,5 +14,6 @@ jobs:
       - name: Run tests
         run: make test
 
-      - name: Build release
-        run: swift build -c release
+      # Builds the release ap and ApApp products and assembles build/Ap.app (ad hoc: no certificate on the runner)
+      - name: Build app
+        run: AP_SIGN_IDENTITY=- make app

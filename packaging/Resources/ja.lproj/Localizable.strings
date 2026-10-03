@@ -66,3 +66,23 @@
 "Could not change Launch at Login" = "「ログイン時に起動」を変更できませんでした";
 "%@\nMove Ap.app to /Applications and try again." = "%@\nAp.app を /Applications に移動してからもう一度お試しください。";
 "Ap could not open its database" = "Ap がデータベースを開けませんでした";
+
+/* Settings */
+"Ap Settings" = "Ap 設定";
+"Settings…" = "設定…";
+"Settings" = "設定";
+"Hotkey" = "ホットキー";
+"Type shortcut…" = "ショートカットを入力…";
+"Reset to %@" = "%@ に戻す";
+"Esc cancels, Delete resets to the default" = "Esc でキャンセル、Delete でデフォルトに戻す";
+"Accessibility" = "アクセシビリティ";
+"Allowed" = "許可済み";
+"Allow…" = "許可…";
+"Picker" = "ピッカー";
+"General" = "一般";
+"Use at least one of ⌘, ⌃ or ⌥" = "⌘・⌃・⌥ のいずれかを含めてください";
+"This shortcut is used by another app or macOS" = "このショートカットは他のアプリか macOS が使用しています";
+"Add ⌃ or ⌥ — ⌘-only shortcuts clash with app shortcuts" = "⌃ か ⌥ を加えてください（⌘ だけのショートカットはアプリのショートカットと衝突します）";
+"Open Picker (shortcut unavailable)" = "ピッカーを開く（ショートカット使用不可）";
+"%@ couldn’t be registered — another app may be using it. Record a different shortcut." = "%@ を登録できませんでした。他のアプリが使用している可能性があります。別のショートカットを記録してください。";
+"%@ couldn’t be registered — another app may be using it. Using %@ instead." = "%1$@ を登録できませんでした。他のアプリが使用している可能性があります。代わりに %2$@ を使用しています。";

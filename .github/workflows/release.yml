@@ -1,7 +1,9 @@
 name: Release
 
-# Tag `vX.Y.Z` -> test, stamp the version, build an arm64 binary, publish a GitHub Release
-# with the tarball + checksum, then bump the Homebrew formula in sadayuki-matsuno/homebrew-tap.
+# Tag `vX.Y.Z` -> test, stamp the version, build Ap.app (the menu bar app with the ap CLI inside), publish a GitHub
+# Release with the zip + checksum, then bump the Homebrew cask in sadayuki-matsuno/homebrew-tap.
+# The runner has no signing certificate, so the app is ad-hoc signed: the first launch needs "Open Anyway" in
+# System Settings (or clearing the quarantine flag) until the app is notarized.
 # A tag with a hyphen (e.g. v1.0.0-rc1) becomes a pre-release and never touches the tap.
 # Re-running the workflow for an existing release re-uploads the assets and continues to the tap step.
 
@@ -15,10 +17,10 @@ permissions:
 jobs:
   release:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       # Fine-grained PAT with contents:write on sadayuki-matsuno/homebrew-tap.
-      # Absent -> the tap step is skipped and the formula must be bumped by hand.
+      # Absent -> the tap step is skipped and the cask must be bumped by hand.
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
       - uses: actions/checkout@v4
@@ -34,24 +36,35 @@ jobs:
             *-*) echo "PRERELEASE=true" >> "$GITHUB_ENV" ;;
             *) echo "PRERELEASE=false" >> "$GITHUB_ENV" ;;
           esac
+          # Version.swift is the single source: build-app.sh fills Info.plist's CFBundleShortVersionString
+          # (the part before any hyphen) and CFBundleVersion from it
           sed -i '' -E "s/^let apVersion = \".*\"/let apVersion = \"${VERSION}\"/" Sources/ap/Version.swift
           grep -q "^let apVersion = \"${VERSION}\"$" Sources/ap/Version.swift
 
-      - name: Build
-        run: swift build -c release --arch arm64
+      - name: Build app
+        run: AP_SIGN_IDENTITY=- make app
+
+      - name: Check the bundle
+        run: |
+          PLIST=build/Ap.app/Contents/Info.plist
+          SHORT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST")
+          BUNDLE_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST")
+          [ "$SHORT" = "${VERSION%%-*}" ] || { echo "::error::CFBundleShortVersionString is $SHORT"; exit 1; }
+          [ "$BUNDLE_VERSION" = "$VERSION" ] || { echo "::error::CFBundleVersion is $BUNDLE_VERSION"; exit 1; }
+          build/Ap.app/Contents/MacOS/ap --version | grep -qF "$VERSION"
+          lipo -archs build/Ap.app/Contents/MacOS/ApApp | grep -q arm64
+          codesign --verify --deep --strict build/Ap.app
 
       - name: Package
         run: |
-          BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
-          "${BIN_DIR}/ap" --version
-          tar -czf "ap-${VERSION}-arm64.tar.gz" -C "${BIN_DIR}" ap
-          shasum -a 256 "ap-${VERSION}-arm64.tar.gz" | tee "ap-${VERSION}-arm64.tar.gz.sha256"
+          ditto -c -k --keepParent build/Ap.app "Ap-${VERSION}.zip"
+          shasum -a 256 "Ap-${VERSION}.zip" | tee "Ap-${VERSION}.zip.sha256"
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ASSETS=("ap-${VERSION}-arm64.tar.gz" "ap-${VERSION}-arm64.tar.gz.sha256")
+          ASSETS=("Ap-${VERSION}.zip" "Ap-${VERSION}.zip.sha256")
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             # Re-run: the release exists already, so replace its assets instead of failing on create
             gh release upload "$GITHUB_REF_NAME" --clobber "${ASSETS[@]}"
@@ -59,29 +72,31 @@ jobs:
             PRERELEASE_FLAG=()
             if [ "$PRERELEASE" = "true" ]; then PRERELEASE_FLAG=(--prerelease); fi
             gh release create "$GITHUB_REF_NAME" \
-              --title "ap $GITHUB_REF_NAME" \
+              --title "Ap $GITHUB_REF_NAME" \
               --generate-notes \
               "${PRERELEASE_FLAG[@]}" \
               "${ASSETS[@]}"
           fi
 
-      # Keep `brew install` current: rewrite the formula's url + sha256 to this release
-      # (Homebrew infers the version from the url). The tarball the checksum names is the one
-      # uploaded above, so the formula can never point at an asset that doesn't exist yet.
+      # Keep `brew install --cask` current: rewrite the cask's version + sha256 to this release (the url is built
+      # from the version; the first release creates Casks/ap.rb from packaging/ap.rb). The zip the checksum names is
+      # the one uploaded above, so the cask can never point at an asset that doesn't exist yet.
       - name: Update Homebrew tap
         if: env.TAP_TOKEN != '' && env.PRERELEASE != 'true'
         run: |
-          SHA=$(cut -d' ' -f1 "ap-${VERSION}-arm64.tar.gz.sha256")
-          URL="https://github.com/sadayuki-matsuno/ap/releases/download/v${VERSION}/ap-${VERSION}-arm64.tar.gz"
+          SHA=$(cut -d' ' -f1 "Ap-${VERSION}.zip.sha256")
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/sadayuki-matsuno/homebrew-tap.git" tap
           cd tap
-          sed -i '' -E "s|^  url \".*\"|  url \"${URL}\"|" Formula/ap.rb
-          sed -i '' -E "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" Formula/ap.rb
+          # First release: the tap has no cask yet, so start it from the template in this repo
+          if [ ! -f Casks/ap.rb ]; then mkdir -p Casks && cp ../packaging/ap.rb Casks/ap.rb; fi
+          sed -i '' -E "s/^  version \".*\"/  version \"${VERSION}\"/" Casks/ap.rb
+          sed -i '' -E "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" Casks/ap.rb
           # sed exits 0 even when nothing matched, so verify both lines really changed
-          grep -qF "  url \"${URL}\"" Formula/ap.rb || { echo "::error::url line not updated in Formula/ap.rb"; exit 1; }
-          grep -qF "  sha256 \"${SHA}\"" Formula/ap.rb || { echo "::error::sha256 line not updated in Formula/ap.rb"; exit 1; }
-          if git diff --quiet -- Formula/ap.rb; then echo "formula already at ${VERSION}"; exit 0; fi
+          grep -qF "  version \"${VERSION}\"" Casks/ap.rb || { echo "::error::version line not updated in Casks/ap.rb"; exit 1; }
+          grep -qF "  sha256 \"${SHA}\"" Casks/ap.rb || { echo "::error::sha256 line not updated in Casks/ap.rb"; exit 1; }
+          git add Casks/ap.rb
+          if git diff --cached --quiet -- Casks/ap.rb; then echo "cask already at ${VERSION}"; exit 0; fi
           git -c user.name="github-actions[bot]" \
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-              commit -am "ap ${VERSION}"
+              commit -m "ap ${VERSION}"
           git push
