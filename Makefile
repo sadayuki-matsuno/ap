@@ -15,7 +15,7 @@ TESTING_FLAGS ?= -Xswiftc -F -Xswiftc $(CLT_DEVELOPER)/Frameworks \
 endif
 endif
 
-.PHONY: build debug test install clean
+.PHONY: build debug test app install clean
 
 build:
 	swift build -c release
@@ -26,9 +26,14 @@ debug:
 test:
 	swift test $(TESTING_FLAGS)
 
+# build/Ap.app (menu bar picker + the ap CLI in Contents/MacOS)
+app:
+	scripts/build-app.sh
+
 install: build
 	install -d $(BINDIR)
 	install -m 755 .build/release/ap $(BINDIR)/ap
 
 clean:
 	swift package clean
+	rm -rf build

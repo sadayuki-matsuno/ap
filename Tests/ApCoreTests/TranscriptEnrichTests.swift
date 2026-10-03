@@ -106,6 +106,22 @@ struct TranscriptFixture {
         #expect(Transcript(lines: TranscriptFixture.standard().lines).gitBranch == "main")
     }
 
+    /// Outside a git repository Claude Code writes gitBranch "HEAD"; that is not a branch
+    @Test func headIsNotABranch() {
+        var fixture = TranscriptFixture.standard()
+        fixture.append([
+            "type": "user", "uuid": "u9", "parentUuid": "r3", "timestamp": TranscriptFixture.timestamp(90),
+            "cwd": "/tmp", "gitBranch": "HEAD", "message": ["role": "user", "content": "elsewhere"],
+        ])
+        #expect(Transcript(lines: fixture.lines).gitBranch == "main")
+        var headOnly = TranscriptFixture()
+        headOnly.append([
+            "type": "user", "uuid": "u1", "timestamp": TranscriptFixture.timestamp(0),
+            "cwd": "/tmp", "gitBranch": "HEAD", "message": ["role": "user", "content": "hi"],
+        ])
+        #expect(Transcript(lines: headOnly.lines).gitBranch == nil)
+    }
+
     @Test func titleIsLastAiTitle() {
         let transcript = Transcript(lines: TranscriptFixture.standard().lines)
         #expect(transcript.title == "New title")
@@ -151,6 +167,9 @@ struct TranscriptFixture {
         ("echo x | LANG=C ap", true),
         ("AP_DB_PATH=/p ap list", false),
         ("FOO=ap make", false),
+        ("ap delete 3", false),
+        ("echo x | ap -c --label y", true),
+        ("ap --clipboard <<'EOF'\nbody\nEOF", true),
     ])
     func invokesCopy(_ command: String, _ expected: Bool) {
         #expect(Enricher.invokesCopy(command) == expected)

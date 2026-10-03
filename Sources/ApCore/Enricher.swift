@@ -16,7 +16,7 @@ public enum Enricher {
     static let slackMilliseconds: Int64 = 1000
 
     static let nonCopySubcommands: Set<String> = [
-        "list", "paste", "pin", "unpin", "enrich", "prune", "doctor", "pick", "open", "help", "--help", "-h", "--version",
+        "list", "paste", "pin", "unpin", "delete", "enrich", "prune", "doctor", "pick", "open", "help", "--help", "-h", "--version",
     ]
     // `ap` in command position (line start or right after | ; & ( ), optionally preceded by `env` and/or
     // NAME=value assignments (AP_DB_PATH=/p ap ...). A path prefix (.build/release/ap) is allowed

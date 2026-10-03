@@ -144,6 +144,26 @@ let humanContext = CaptureContext(
         #expect(try store.search("double launch").isEmpty)
     }
 
+    @Test func deleteRemovesClipFromSearchAndEmptySession() throws {
+        let store = try makeTemporaryStore()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = try store.record(
+            content: "the double launch fix", label: nil, concealed: false, uuid: "a", context: claudeContext, now: now)
+        let second = try store.record(
+            content: "pinned note", label: nil, concealed: false, uuid: "b", context: claudeContext, now: now)
+        _ = try store.setPinned(id: second.id!, pinned: true)
+
+        #expect(try store.delete(id: first.id!))
+        #expect(try store.clip(id: first.id!) == nil)
+        #expect(try store.search("double launch").isEmpty)
+        #expect(try store.sessions(ids: ["session-1"]).count == 1)
+
+        // Pinned clips can be deleted too; the session goes with its last clip
+        #expect(try store.delete(id: second.id!))
+        #expect(try store.sessions(ids: ["session-1"]).isEmpty)
+        #expect(try store.delete(id: second.id!) == false)
+    }
+
     @Test func countsByEnrichState() throws {
         let store = try makeTemporaryStore()
         _ = try store.record(content: "a", label: nil, concealed: false, uuid: "1", context: claudeContext, now: Date())

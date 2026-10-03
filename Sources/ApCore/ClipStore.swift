@@ -267,10 +267,12 @@ public final class ClipStore: Sendable {
 
     public func sessions(ids: Set<String>) throws -> [String: Session] {
         guard !ids.isEmpty else { return [:] }
-        return try dbPool.read { db in
-            let sessions = try Session.filter(keys: Array(ids)).fetchAll(db)
-            return Dictionary(uniqueKeysWithValues: sessions.map { ($0.sessionId, $0) })
-        }
+        return try dbPool.read { db in try Self.sessions(db, ids: ids) }
+    }
+
+    public static func sessions(_ db: Database, ids: Set<String>) throws -> [String: Session] {
+        let sessions = try Session.filter(keys: Array(ids)).fetchAll(db)
+        return Dictionary(uniqueKeysWithValues: sessions.map { ($0.sessionId, $0) })
     }
 
     public func markPasted(id: Int64, now: Date) throws {
@@ -286,6 +288,16 @@ public final class ClipStore: Sendable {
         try dbPool.write { db in
             try db.execute(sql: "UPDATE clips SET pinned = ? WHERE id = ?", arguments: [pinned, id])
             return db.changesCount > 0
+        }
+    }
+
+    /// Deletes one clip (pinned or not) and its session when no clip is left. false if there is no such clip
+    public func delete(id: Int64) throws -> Bool {
+        try dbPool.write { db in
+            try db.execute(sql: "DELETE FROM clips WHERE id = ?", arguments: [id])
+            guard db.changesCount > 0 else { return false }
+            try db.execute(sql: "DELETE FROM sessions WHERE session_id NOT IN (SELECT session_id FROM clips WHERE session_id IS NOT NULL)")
+            return true
         }
     }
 
@@ -347,6 +359,60 @@ public final class ClipStore: Sendable {
         return try dbPool.read { db in
             try Int64.fetchAll(db, sql: "SELECT rowid FROM clips_fts WHERE clips_fts MATCH ? ORDER BY rowid", arguments: [phrase])
         }
+    }
+
+    /// Clips matching a picker query, newest first
+    public func clips(matching query: ClipQuery, limit: Int) throws -> [Clip] {
+        try dbPool.read { db in try Self.clips(db, matching: query, limit: limit) }
+    }
+
+    /// Text of 3+ characters uses the trigram index (which cannot match shorter strings), shorter text uses LIKE.
+    /// Concealed clips match on their label and prompt only, so a search never reveals what a secret contains
+    public static func clips(_ db: Database, matching query: ClipQuery, limit: Int) throws -> [Clip] {
+        func like(_ value: String) -> String {
+            "%" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "%", with: "\\%")
+                .replacingOccurrences(of: "_", with: "\\_") + "%"
+        }
+        var conditions: [String] = []
+        var arguments: [any DatabaseValueConvertible] = []
+        if query.text.count >= 3 {
+            let phrase = "\"" + query.text.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+            conditions.append("""
+                ((clips.concealed = 0 AND clips.id IN (SELECT rowid FROM clips_fts WHERE clips_fts MATCH ?))
+                  OR clips.id IN (SELECT rowid FROM clips_fts WHERE clips_fts MATCH ?))
+                """)
+            arguments += [phrase, "{label prompt_snapshot} : " + phrase]
+        } else if !query.text.isEmpty {
+            conditions.append("""
+                ((clips.concealed = 0 AND clips.content LIKE ? ESCAPE '\\') OR clips.label LIKE ? ESCAPE '\\'
+                  OR clips.prompt_snapshot LIKE ? ESCAPE '\\')
+                """)
+            arguments += [like(query.text), like(query.text), like(query.text)]
+        }
+        if let repository = query.repository {
+            conditions.append("(clips.repository LIKE ? ESCAPE '\\' OR sessions.repository LIKE ? ESCAPE '\\')")
+            arguments += [like(repository), like(repository)]
+        }
+        if let session = query.session {
+            // Sessions without a title are shown under their first prompt, so match that instead
+            conditions.append("""
+                (sessions.title LIKE ? ESCAPE '\\' OR (sessions.title IS NULL AND sessions.first_prompt LIKE ? ESCAPE '\\'))
+                """)
+            arguments += [like(session), like(session)]
+        }
+        if let kind = query.kind {
+            conditions.append("clips.content_kind = ?")
+            arguments.append(kind)
+        }
+        if query.pinnedOnly { conditions.append("clips.pinned = 1") }
+        let whereClause = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " AND ")
+        return try Clip.fetchAll(
+            db,
+            sql: """
+                SELECT clips.* FROM clips LEFT JOIN sessions ON sessions.session_id = clips.session_id
+                \(whereClause) ORDER BY clips.created_at DESC, clips.id DESC LIMIT ?
+                """,
+            arguments: StatementArguments(arguments + [limit]))
     }
 
     public func countsByEnrichState() throws -> [String: Int] {

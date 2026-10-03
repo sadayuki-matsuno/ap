@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "ap", targets: ["ap"]),
+        .executable(name: "ApApp", targets: ["ApApp"]),
         .library(name: "ApCore", targets: ["ApCore"]),
     ],
     dependencies: [
@@ -17,12 +18,20 @@ let package = Package(
             name: "ApCore",
             dependencies: [.product(name: "GRDB", package: "GRDB.swift")]
         ),
+        // NSPasteboard writes shared by the CLI and the app (ApCore stays AppKit-free)
+        .target(name: "ApClipboard", dependencies: ["ApCore"]),
         .executableTarget(
             name: "ap",
             dependencies: [
                 "ApCore",
+                "ApClipboard",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
+        ),
+        // The menu bar app, bundled into build/Ap.app by `make app`
+        .executableTarget(
+            name: "ApApp",
+            dependencies: ["ApCore", "ApClipboard", .product(name: "GRDB", package: "GRDB.swift")]
         ),
         .testTarget(
             name: "ApCoreTests",

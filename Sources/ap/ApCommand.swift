@@ -1,4 +1,4 @@
-import AppKit
+import ApClipboard
 import ApCore
 import ArgumentParser
 import Foundation
@@ -8,10 +8,14 @@ import GRDB
 struct Ap: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ap",
-        abstract: "Copy to the clipboard like pbcopy, and record AI copies with where they came from",
-        discussion: "When stdin is piped, plain `ap` acts as `ap copy` (e.g. echo hello | ap --label note)",
+        abstract: "Record text from AI agents with where it came from, to paste later from the Ap.app picker",
+        discussion: """
+            When stdin is piped, plain `ap` acts as `ap copy` (e.g. echo hello | ap --label note). \
+            The clipboard is left alone unless --clipboard is given; pick a clip with Control-Command-P in Ap.app \
+            or put it on the clipboard with `ap paste N`.
+            """,
         version: apVersion,
-        subcommands: [Copy.self, List.self, Paste.self, Pin.self, Unpin.self, Enrich.self, Prune.self, Doctor.self])
+        subcommands: [Copy.self, List.self, Paste.self, Pin.self, Unpin.self, Delete.self, Enrich.self, Prune.self, Doctor.self])
 
     @OptionGroup var copyOptions: CopyOptions
 
@@ -30,10 +34,14 @@ struct CopyOptions: ParsableArguments {
 
     @Flag(help: "Treat as sensitive: clipboard managers are asked not to keep it, and lists mask it")
     var concealed = false
+
+    @Flag(name: [.customShort("c"), .long], help: "Also write the system clipboard (like pbcopy)")
+    var clipboard = false
 }
 
 struct Copy: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Copy stdin to the clipboard and record it (same as `... | ap`)")
+    static let configuration = CommandConfiguration(
+        abstract: "Record stdin in the history (same as `... | ap`); --clipboard also writes the clipboard")
 
     @OptionGroup var copyOptions: CopyOptions
 
@@ -42,19 +50,20 @@ struct Copy: ParsableCommand {
     }
 }
 
-/// 1. write the pasteboard (non-zero exit on failure) -> 2. record (failure only warns, exit 0) -> 3. prune expired clips (inside record)
+/// 1. with --clipboard, write the pasteboard (non-zero exit on failure) -> 2. record (failure exits non-zero, or only
+/// warns when the clipboard was written) -> 3. prune expired clips (inside record)
 func performCopy(_ options: CopyOptions) throws {
     let data = FileHandle.standardInput.readDataToEndOfFile()
     let content = String(decoding: data, as: UTF8.self)
-    // Don't clear the clipboard when invoked without input (stdin is /dev/null etc.)
+    // Nothing to record; also keeps --clipboard from clearing the clipboard when stdin is /dev/null etc.
     guard !content.isEmpty else {
-        printError("ap: input is empty; clipboard left unchanged (see ap --help)")
+        printError("ap: input is empty; nothing recorded (see ap --help)")
         return
     }
     let uuid = UUID().uuidString.lowercased()
     let concealed = options.concealed || SecretDetector.containsSecret(content)
 
-    guard writePasteboard(content: content, uuid: uuid, concealed: concealed) else {
+    if options.clipboard, !writePasteboard(content: content, uuid: uuid, concealed: concealed) {
         printError("ap: failed to write to the clipboard")
         throw ExitCode.failure
     }
@@ -65,37 +74,12 @@ func performCopy(_ options: CopyOptions) throws {
         try store.record(
             content: content, label: options.label, concealed: concealed, uuid: uuid, context: context, now: Date())
     } catch {
+        guard options.clipboard else {
+            printError("ap: failed to record history: \(error)")
+            throw ExitCode.failure
+        }
         printError("ap: warning: failed to record history (the clipboard was still updated): \(error)")
     }
-}
-
-/// Writes one NSPasteboardItem holding every type. Another process can clear the pasteboard between our
-/// clearContents and writeObjects (parallel `| ap` calls do exactly that), which makes writeObjects fail,
-/// so retry a few times with a short backoff
-func writePasteboard(content: String, uuid: String, concealed: Bool) -> Bool {
-    let pasteboard = NSPasteboard.general
-    // AppKit NSLogs every failed attempt to stderr ("_setData:forType: returns false"); keep that out of the
-    // caller's output while retrying. Our own error message is printed after stderr is restored
-    let savedStandardError = dup(STDERR_FILENO)
-    let devNull = open("/dev/null", O_WRONLY)
-    if savedStandardError >= 0, devNull >= 0 { dup2(devNull, STDERR_FILENO) }
-    defer {
-        if savedStandardError >= 0 { dup2(savedStandardError, STDERR_FILENO); close(savedStandardError) }
-        if devNull >= 0 { close(devNull) }
-    }
-    for attempt in 0..<8 {
-        if attempt > 0 { usleep(useconds_t(5_000 << min(attempt - 1, 4))) }
-        let item = NSPasteboardItem()
-        guard item.setString(content, forType: .string),
-              item.setString(uuid, forType: NSPasteboard.PasteboardType(PasteboardTypes.clipId))
-        else { return false }
-        if concealed {
-            _ = item.setData(Data(), forType: NSPasteboard.PasteboardType(PasteboardTypes.concealed))
-        }
-        pasteboard.clearContents()
-        if pasteboard.writeObjects([item]) { return true }
-    }
-    return false
 }
 
 func printError(_ message: String) {
@@ -147,7 +131,8 @@ struct List: ParsableCommand {
         }
         for group in ClipListing.group(clips, sessions: sessions) {
             let latest = group.clips[0]
-            var heading = group.session?.title ?? group.sessionId.map { "session \($0.prefix(8))" } ?? "no session (\(latest.agent))"
+            var heading = ClipListing.displayTitle(group.session) ?? group.sessionId.map { "session \($0.prefix(8))" }
+                ?? "no session (\(latest.agent))"
             if let location = group.session.flatMap(ClipListing.sessionLocation) { heading += "  \(location)" }
             heading += "  \(formatTime(latest.createdAt))"
             print("■ \(heading)")
@@ -264,6 +249,20 @@ struct Unpin: ParsableCommand {
 
     mutating func run() throws {
         guard try openStore().setPinned(id: id, pinned: false) else {
+            printError("ap: no clip #\(id)")
+            throw ExitCode.failure
+        }
+    }
+}
+
+struct Delete: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Delete a clip (pinned or not)")
+
+    @Argument(help: "Clip ID (the #number in ap list)")
+    var id: Int64
+
+    mutating func run() throws {
+        guard try openStore().delete(id: id) else {
             printError("ap: no clip #\(id)")
             throw ExitCode.failure
         }

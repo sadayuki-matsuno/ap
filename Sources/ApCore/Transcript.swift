@@ -86,7 +86,8 @@ public struct Transcript: Sendable {
         let parentUuid = object["parentUuid"] as? String
         let timestamp = (object["timestamp"] as? String).flatMap(timestampParser.parse) ?? 0
         if cwd == nil, let rowCwd = object["cwd"] as? String { cwd = rowCwd }
-        if let rowBranch = object["gitBranch"] as? String, !rowBranch.isEmpty { gitBranch = rowBranch }
+        // Outside a git repository the row says "HEAD", which is not a branch
+        if let rowBranch = object["gitBranch"] as? String, !rowBranch.isEmpty, rowBranch != "HEAD" { gitBranch = rowBranch }
         let message = object["message"] as? [String: Any]
 
         switch type {
