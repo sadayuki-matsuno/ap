@@ -509,7 +509,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             let session = clip.sessionId.flatMap { sessions[$0] }
             let detail = [
                 sessionDisplayName(session, sessionId: clip.sessionId, agent: clip.agent), clip.label,
-                formatTime(clip.createdAt),
+                formatTime(clip.createdAt), ClipListing.usageBadge(pasteCount: clip.pasteCount),
             ]
                 .compactMap { $0 }.joined(separator: " \u{00B7} ")
             title.append(NSAttributedString(

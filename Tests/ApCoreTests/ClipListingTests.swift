@@ -3,6 +3,12 @@ import Testing
 @testable import ApCore
 
 @Suite struct ClipListingTests {
+    @Test func usageBadgeShowsOnlyForUsedClips() {
+        #expect(ClipListing.usageBadge(pasteCount: 0) == nil)
+        #expect(ClipListing.usageBadge(pasteCount: 1) == "\u{2713} 1")
+        #expect(ClipListing.usageBadge(pasteCount: 12) == "\u{2713} 12")
+    }
+
     @Test func groupsBySessionNewestFirst() throws {
         let store = try makeTemporaryStore()
         let otherContext = CaptureContext(

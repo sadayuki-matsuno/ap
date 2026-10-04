@@ -94,9 +94,9 @@ Ordinary copies you make yourself are never captured. Copies made by hand from a
 | `... \| ap -c` | Record and also write the clipboard, like pbcopy (`--clipboard`) |
 | `... \| ap --label "Slack reply"` | Record with a label shown in lists and the picker |
 | `... \| ap --concealed` | Mark as sensitive (masked in lists, concealed on the clipboard) |
-| `ap list` | History grouped by session, newest first (runs pending enrichment first) |
+| `ap list` | History grouped by session, newest first (runs pending enrichment first); used clips end their line with `✓ <count>` |
 | `ap list --session ID --limit 20` | One session, at most 20 clips |
-| `ap list --json` | Machine-readable (concealed content is blanked) |
+| `ap list --json` | Machine-readable, including `paste_count` (concealed content is blanked) |
 | `ap paste 2` | Put the 2nd newest clip back on the clipboard |
 | `ap pin 42` / `ap unpin 42` | Keep clip #42 past the retention period, or stop keeping it |
 | `ap delete 42` | Delete clip #42 (pinned or not) |
@@ -106,7 +106,7 @@ Ordinary copies you make yourself are never captured. Copies made by hand from a
 
 ### Picker
 
-Press **Control-Command-P** (the default hotkey) anywhere. The picker floats over the current app without taking it out of the foreground, and the search field is ready for typing. Clips are grouped by session (newest first, with the session title, `repository | branch` and last copy time); the right side shows the full text, the prompt that produced it, the subagent or context snapshot, and where it came from. The clip currently on the clipboard is marked "on clipboard".
+Press **Control-Command-P** (the default hotkey) anywhere. The picker floats over the current app without taking it out of the foreground, and the search field is ready for typing. Clips are grouped by session (newest first, with the session title, `repository | branch` and last copy time); the right side shows the full text, the prompt that produced it, the subagent or context snapshot, and where it came from. The clip currently on the clipboard is marked "on clipboard". A clip you have already pasted or copied from Ap shows a right-aligned count such as `✓ 3` (used rows are slightly dimmed), so you can see how far you have worked through a series of copies; clips never used show nothing. Enter, Command-Enter, a click in the menu bar menu and `ap paste` each count once.
 
 | Key | Action |
 |---|---|

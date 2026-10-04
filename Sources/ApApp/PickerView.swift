@@ -153,6 +153,11 @@ struct ClipRow: View {
                     .truncationMode(.tail)
                 Spacer(minLength: 0)
                 if clip.pinned { Image(systemName: "pin.fill").font(.caption2) }
+                if let badge = ClipListing.usageBadge(pasteCount: clip.pasteCount) {
+                    Text(badge)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(selected ? Color.white.opacity(0.9) : Color.secondary)
+                }
             }
             HStack(spacing: 6) {
                 if let label = clip.label { Text(label).fontWeight(.medium) }
@@ -169,6 +174,7 @@ struct ClipRow: View {
             .lineLimit(1)
         }
         .foregroundStyle(selected ? Color.white : Color.primary)
+        .opacity(clip.pasteCount > 0 && !selected ? 0.8 : 1)
         .padding(.vertical, 5)
         .padding(.leading, 22)
         .padding(.trailing, 12)

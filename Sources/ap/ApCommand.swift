@@ -142,6 +142,7 @@ struct List: ParsableCommand {
                 var line = "\(number) #\(clip.id ?? 0) \(formatTime(clip.createdAt)) [\(clip.contentKind ?? "text")]"
                 if let label = clip.label { line += " \"\(label)\"" }
                 if clip.pinned { line += " 📌" }
+                if let badge = ClipListing.usageBadge(pasteCount: clip.pasteCount) { line += " \(badge)" }
                 if let location = ClipListing.clipLocation(clip, session: group.session) { line += " @ \(location)" }
                 if let subagent = clip.subagent { line += " <- subagent: \(subagent.prefix(40))" }
                 if clip.enrichState != EnrichState.done.rawValue { line += " (\(clip.enrichState))" }
