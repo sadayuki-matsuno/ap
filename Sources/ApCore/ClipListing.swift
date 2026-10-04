@@ -53,6 +53,11 @@ public enum ClipListing {
         return location == session.flatMap(sessionLocation) ? nil : location
     }
 
+    /// "✓ 3" for a clip that has been pasted or copied from a list before; nil for a clip never used
+    public static func usageBadge(pasteCount: Int) -> String? {
+        pasteCount > 0 ? "\u{2713} \(pasteCount)" : nil
+    }
+
     /// One-line preview. Concealed clips are masked
     public static func preview(_ clip: Clip, maxLength: Int) -> String {
         if clip.concealed { return "•••••••• (concealed, \(clip.content.count) chars)" }
