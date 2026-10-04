@@ -14,7 +14,7 @@ A clipboard ledger for AI agents on macOS. Agents pipe text into `ap` instead of
 brew install --cask sadayuki-matsuno/tap/ap
 ```
 
-> Gatekeeper may block the first launch (ad-hoc signature). See [Install](#install).
+> The prebuilt app is ad-hoc signed (no Apple Developer ID yet). See [Install](#install) and [Troubleshooting](#troubleshooting).
 
 When an agent hands you a Slack reply, a SQL query and a PR description in one afternoon, they all land on the same clipboard and overwrite each other, and an hour later nobody remembers which session wrote which. Pipe them through `ap` instead: every copy is kept for 24 hours with its session title, repository, branch, the prompt that asked for it and the explanation right before it, and your own clipboard is left alone. Press Control-Command-P anywhere, pick one, and Enter pastes it into the app you were in.
 
@@ -46,7 +46,7 @@ brew install --cask sadayuki-matsuno/tap/ap
 
 The cask installs `Ap.app` into `/Applications` and links the `ap` CLI (which lives inside the app, in `Ap.app/Contents/MacOS/ap`) onto your PATH. Open Ap once; it stays in the menu bar and can start at login (Settings).
 
-> The prebuilt app is ad-hoc signed (no Apple Developer ID yet), so macOS may refuse the first launch. Click **Open Anyway** in *System Settings > Privacy & Security*, or clear the quarantine flag with `xattr -dr com.apple.quarantine /Applications/Ap.app`. Building from source avoids this entirely.
+> The prebuilt app is ad-hoc signed (no Apple Developer ID yet). The cask clears the quarantine flag from `Ap.app` after every install and upgrade, so neither the app nor the `ap` CLI needs a manual step. Because the signature changes with each release, re-grant Accessibility after an upgrade if Enter stops pasting (see [Troubleshooting](#troubleshooting)). Building from source avoids all of this.
 
 ### From source
 
@@ -195,7 +195,8 @@ See [docs/design.md](docs/design.md) for the matching rules, the data model and 
 
 ## Troubleshooting
 
-- **Accessibility is on, but Enter still only copies.** The grant belongs to the code signature it was given to. After installing a new ad-hoc signed build, the old "Ap" entry no longer matches: select it in *Privacy & Security > Accessibility*, remove it with the minus button and add Ap again (or use **Allow...** in Settings). If the switch is on and Ap still can't paste, the picker's banner offers **Relaunch Ap**. For your own builds, a stable signing identity (`ap-dev`, see [From source](#from-source)) makes the grant survive rebuilds
+- **`ap` prints "Killed: 9" (exit 137), or macOS blocks the app.** The quarantine flag is still on `Ap.app`; an ad-hoc signed binary that carries it is killed when run through the `ap` symlink. The cask clears it on install, but if it is back (for example after a manual download), run `xattr -dr com.apple.quarantine /Applications/Ap.app`. You can also click **Open Anyway** in *System Settings > Privacy & Security*
+- **Accessibility is on, but Enter still only copies.** The grant belongs to the code signature it was given to. After installing a new ad-hoc signed build (including each `brew upgrade --cask ap`), the old "Ap" entry no longer matches: select it in *Privacy & Security > Accessibility*, remove it with the minus button and add Ap again (or use **Allow...** in Settings). If the switch is on and Ap still can't paste, the picker's banner offers **Relaunch Ap**. For your own builds, a stable signing identity (`ap-dev`, see [From source](#from-source)) makes the grant survive rebuilds
 - **The hotkey does nothing.** Another app or macOS owns the combination. Recording it in Settings says "This shortcut is used by another app or macOS" and keeps the old one. If your saved hotkey gets taken while Ap isn't running, Ap falls back to ⌃⌘P at the next launch when that is free, and Settings says which shortcut couldn't be registered; when neither works, the menu shows **Open Picker (shortcut unavailable)** and Settings asks you to record a different shortcut. The menu's **Open Picker** item otherwise shows the hotkey in effect
 - **A clip shows "pending".** Enrichment waits for Claude Code to write the Bash call to the transcript, which happens when the command exits. It is retried every 5 seconds while Ap.app runs (or on `ap list` / `ap enrich --pending`). After 10 minutes without a match the clip becomes "failed" and keeps the session's latest prompt
 - **A copy made by a subagent.** It is listed under the parent session, marked "subagent", with the subagent's description and task as its context
