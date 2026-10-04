@@ -59,7 +59,7 @@ public struct CaptureContext: Sendable, Equatable {
         }
     }
 
-    enum GitOutcome {
+    enum GitOutcome: Equatable {
         case success(String?)
         /// git ran and exited non-zero (not a repository, no such remote, detached HEAD, ...)
         case failure
@@ -72,18 +72,24 @@ public struct CaptureContext: Sendable, Equatable {
         }
     }
 
+    /// Time budget for all git calls of one resolveLocation. git answers in about 10 ms on an idle Mac (measured
+    /// 2026-10-04), but on a loaded CI runner a call took over 0.5 s, and a timeout means "couldn't tell", which is
+    /// not the same as "not a repository". Only a git that hangs costs the whole budget; a quick answer returns at once
+    static let locationTimeout: TimeInterval = 2
+
     /// nil when git could not answer (timeout, launch failure), so callers can keep what they had.
-    /// A directory outside any repository resolves to an empty Location
+    /// A directory outside any repository (git exits non-zero) resolves to an empty Location, however long git took
     public static func resolveLocation(cwd: String) -> Location? {
-        let topLevel = git(["rev-parse", "--show-toplevel"], cwd: cwd)
+        let deadline = DispatchTime.now() + locationTimeout
+        let topLevel = git(["rev-parse", "--show-toplevel"], cwd: cwd, deadline: deadline)
         switch topLevel {
         case .unavailable: return nil
         case .failure: return Location(repository: nil, gitBranch: nil)
         case .success: break
         }
-        let remote = git(["remote", "get-url", "origin"], cwd: cwd)
+        let remote = git(["remote", "get-url", "origin"], cwd: cwd, deadline: deadline)
         // symbolic-ref also names an unborn branch (a repo with no commits); a detached HEAD gives nil
-        let branch = git(["symbolic-ref", "--short", "-q", "HEAD"], cwd: cwd)
+        let branch = git(["symbolic-ref", "--short", "-q", "HEAD"], cwd: cwd, deadline: deadline)
         if case .unavailable = remote { return nil }
         if case .unavailable = branch { return nil }
         let repository = remote.output.flatMap(Self.repository(fromRemoteURL:))
@@ -91,11 +97,18 @@ public struct CaptureContext: Sendable, Equatable {
         return Location(repository: repository, gitBranch: branch.output)
     }
 
-    /// Runs git synchronously with a short timeout (never blocks recording for long)
-    static func git(_ arguments: [String], cwd: String, timeout: TimeInterval = 0.5) -> GitOutcome {
+    /// Runs git synchronously until `deadline` (never blocks recording for long)
+    static func git(_ arguments: [String], cwd: String, deadline: DispatchTime) -> GitOutcome {
+        run("/usr/bin/git", ["-C", cwd] + arguments, deadline: deadline)
+    }
+
+    /// Runs a command and classifies it by exit status: 0 is success (trimmed stdout), non-zero is failure. Only a
+    /// launch failure or still running at `deadline` is unavailable. (git gets the directory through -C, so a cwd that
+    /// no longer exists is a git failure, i.e. an empty Location, not a launch failure)
+    static func run(_ executable: String, _ arguments: [String], deadline: DispatchTime) -> GitOutcome {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-C", cwd] + arguments
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
         var environment = ProcessInfo.processInfo.environment
         environment["GIT_OPTIONAL_LOCKS"] = "0"
         process.environment = environment
@@ -107,10 +120,12 @@ public struct CaptureContext: Sendable, Equatable {
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }
         do { try process.run() } catch { return .unavailable }
-        if finished.wait(timeout: .now() + timeout) == .timedOut {
+        // A process that exits right at the deadline still counts by its exit status
+        if finished.wait(timeout: deadline) == .timedOut, process.isRunning {
             process.terminate()
             return .unavailable
         }
+        process.waitUntilExit()
         guard process.terminationStatus == 0 else { return .failure }
         let data = output.fileHandleForReading.readDataToEndOfFile()
         let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)

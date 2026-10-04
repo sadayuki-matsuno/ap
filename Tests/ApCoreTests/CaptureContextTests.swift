@@ -44,7 +44,39 @@ import Testing
     }
 }
 
-@Suite struct RepositoryLocationTests {
+@Suite struct GitRunnerTests {
+    /// A stand-in for git that answers late: exit status decides, not timing
+    @Test func slowNonZeroExitIsAFailureNotUnavailable() {
+        let outcome = CaptureContext.run(
+            "/bin/sh", ["-c", "sleep 0.7; echo 'fatal: not a git repository' >&2; exit 128"],
+            deadline: .now() + 5)
+        #expect(outcome == .failure)
+    }
+
+    @Test func slowSuccessIsReported() {
+        let outcome = CaptureContext.run("/bin/sh", ["-c", "sleep 0.7; echo main"], deadline: .now() + 5)
+        #expect(outcome == .success("main"))
+    }
+
+    @Test func onlyARealTimeoutIsUnavailable() {
+        let started = Date()
+        let outcome = CaptureContext.run("/bin/sh", ["-c", "sleep 5"], deadline: .now() + 0.3)
+        #expect(outcome == .unavailable)
+        #expect(Date().timeIntervalSince(started) < 2)
+    }
+
+    @Test func spawnFailureIsUnavailable() {
+        #expect(CaptureContext.run("/nonexistent/git", [], deadline: .now() + 1) == .unavailable)
+    }
+
+    /// Measured: git answers in about 10 ms on an idle Mac, but a loaded CI runner took over 0.5 s
+    @Test func locationBudgetToleratesSlowMachines() {
+        #expect(CaptureContext.locationTimeout >= 2)
+    }
+}
+
+// Spawns git processes; serialized so a loaded CI runner doesn't run them all at once
+@Suite(.serialized) struct RepositoryLocationTests {
     func makeRepository(remote: String?) throws -> String {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ap-repo-\(UUID().uuidString.prefix(8))").appendingPathComponent("myrepo")
@@ -84,5 +116,11 @@ import Testing
         let location = try #require(CaptureContext.resolveLocation(cwd: directory.path))
         #expect(location.repository == nil)
         #expect(location.gitBranch == nil)
+    }
+
+    /// A worktree deleted since the copy: git says so (non-zero exit), which is an empty location, not "couldn't tell"
+    @Test func missingDirectoryResolvesToEmptyLocation() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("ap-gone-\(UUID().uuidString)").path
+        #expect(CaptureContext.resolveLocation(cwd: path) == CaptureContext.Location(repository: nil, gitBranch: nil))
     }
 }
